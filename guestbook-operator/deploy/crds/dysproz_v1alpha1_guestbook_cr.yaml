@@ -1,0 +1,11 @@
+apiVersion: dysproz.io/v1alpha1
+kind: Guestbook
+metadata:
+  name: example-guestbook
+spec:
+  redisSize: 3
+  guestbookSize: 3
+  redisMasterImage: "redis"
+  redisSlaveImage: "gcr.io/google_samples/gb-redisslave:v3"
+  guestbookImage: "gcr.io/google-samples/gb-frontend:v4"
+
