@@ -328,7 +328,11 @@ func newRedisSlavesForCR(cr *dysprozv1alpha1.Guestbook) *appsv1.Deployment {
 							Env: []corev1.EnvVar{
 								{
 									Name:  "GET_HOSTS_FROM",
-									Value: "dns",
+									Value: "env",
+								},
+								{
+									Name:  "REDIS_MASTER_SERVICE_HOST",
+									Value: cr.Name + "-redis-master-service",
 								},
 							},
 						},
@@ -416,8 +420,12 @@ func newFrontend(cr *dysprozv1alpha1.Guestbook) *appsv1.Deployment {
 							Image: cr.Spec.GuestbookImage,
 							Env: []corev1.EnvVar{
 								{
-									Name:  "GET_HOST_FROM",
-									Value: "dns",
+									Name:  "GET_HOSTS_FROM",
+									Value: "env",
+								},
+								{
+									Name:  "REDIS_SLAVE_SERVICE_HOST",
+									Value: cr.Name + "-redis-slave-service",
 								},
 							},
 							Ports: []corev1.ContainerPort{
