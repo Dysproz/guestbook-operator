@@ -16,10 +16,10 @@ spec:
       containers:
         - name: guestbook-operator
           # Replace this with the built image name
-          image: dysproz/guestbook-operator
+          image: dysproz/guestbook-operator:dev
           command:
           - guestbook-operator
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             - name: WATCH_NAMESPACE
               valueFrom:

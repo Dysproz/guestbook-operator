@@ -30,6 +30,17 @@ spec:
           type: object
         spec:
           description: GuestbookSpec defines the desired state of Guestbook
+          properties:
+            guestbookImage:
+              type: string
+            guestbookSize:
+              type: integer
+            redisMasterImage:
+              type: string
+            redisSize:
+              type: integer
+            redisSlaveImage:
+              type: string
           type: object
         status:
           description: GuestbookStatus defines the observed state of Guestbook

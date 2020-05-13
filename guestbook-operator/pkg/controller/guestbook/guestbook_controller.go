@@ -2,7 +2,6 @@ package guestbook
 
 import (
 	"context"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	dysprozv1alpha1 "github.com/Dysproz/guestbook-operator/pkg/apis/dysproz/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -49,6 +48,12 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	// Watch for changes to primary resource Guestbook
 	err = c.Watch(&source.Kind{Type: &dysprozv1alpha1.Guestbook{}}, &handler.EnqueueRequestForObject{})
+	if err != nil {
+		return err
+	}
+
+	// Watch for changes to primary resource Redis
+	err = c.Watch(&source.Kind{Type: &dysprozv1alpha1.Redis{}}, &handler.EnqueueRequestForObject{})
 	if err != nil {
 		return err
 	}
@@ -119,20 +124,21 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
-	// Define a new Pod object with Redis Master
-	redisMaster := newRedisMasterForCR(instance)
+	// Create Redis
 
-	// Set Guestbook instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, redisMaster, r.scheme); err != nil {
+	redis := newRedis(instance)
+
+	// Set Redis instance as the owner and controller
+	if err := controllerutil.SetControllerReference(instance, redis, r.scheme); err != nil {
 		return reconcile.Result{}, err
 	}
 
-	// Check if this Pod already exists
-	foundMaster := &corev1.Pod{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redisMaster.Name, Namespace: redisMaster.Namespace}, foundMaster)
+	// Check if Redis already exists
+	foundRedis := &dysprozv1alpha1.Redis{}
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redis.Name, Namespace: redis.Namespace}, foundRedis)
 	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Pod RedisMaster", "Pod.Namespace", redisMaster.Namespace, "Pod.Name", redisMaster.Name)
-		err = r.client.Create(context.TODO(), redisMaster)
+		reqLogger.Info("Creating a new Redis", "Pod.Namespace", redis.Namespace, "Pod.Name", redis.Name)
+		err = r.client.Create(context.TODO(), redis)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
@@ -141,78 +147,14 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
-	// Create Service for Redis Master
-	redisMasterService := newRedisMasterService(instance)
-
-	// Set Guestbook instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, redisMasterService, r.scheme); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	// Check if this Service already exists
-	foundMasterService := &corev1.Service{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redisMasterService.Name, Namespace: redisMasterService.Namespace}, foundMasterService)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Service redisMasterService", "Pod.Namespace", redisMasterService.Namespace, "Pod.Name", redisMasterService.Name)
-		err = r.client.Create(context.TODO(), redisMasterService)
+	if foundRedis.Spec.Size != instance.Spec.RedisSize {
+		err = r.client.Update(context.TODO(), redis)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
-
-	} else if err != nil {
-		return reconcile.Result{}, err
 	}
 
-	//Create Deployment with Redis Slaves
-
-	redisSlaves := newRedisSlavesForCR(instance)
-
-	// Set Guestbook instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, redisSlaves, r.scheme); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	// Check if this Deployment already exists
-	foundSlaves := &appsv1.Deployment{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redisSlaves.Name, Namespace: redisSlaves.Namespace}, foundSlaves)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Deployment RedisSlaves", "Pod.Namespace", redisSlaves.Namespace, "Pod.Name", redisSlaves.Name)
-		err = r.client.Create(context.TODO(), redisSlaves)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-	} else if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	redisSlavesSize := int32(instance.Spec.RedisSize - 1)
-	if foundSlaves.Spec.Replicas != &redisSlavesSize {
-		err = r.client.Update(context.TODO(), redisSlaves)
-	}
-
-	// Create Service for Redis Slaves
-	redisSlavesService := newRedisSlavesService(instance)
-
-	// Set Guestbook instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, redisSlavesService, r.scheme); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	// Check if this Service already exists
-	foundSlavesService := &corev1.Service{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redisSlavesService.Name, Namespace: redisSlavesService.Namespace}, foundSlavesService)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Service redisSlavesService", "Pod.Namespace", redisSlavesService.Namespace, "Pod.Name", redisSlavesService.Name)
-		err = r.client.Create(context.TODO(), redisSlavesService)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-	} else if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	//Create Deployment with Frontend pods
+	// Create Deployment with Frontend pods
 
 	frontendPods := newFrontend(instance)
 
@@ -264,128 +206,20 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 	return reconcile.Result{}, nil
 }
 
-// newRedisMasterForCR returns a redis master pod with the same name/namespace as the cr
-func newRedisMasterForCR(cr *dysprozv1alpha1.Guestbook) *corev1.Pod {
+func newRedis(cr *dysprozv1alpha1.Guestbook) *dysprozv1alpha1.Redis {
 	labels := map[string]string{
-		"app":  cr.Name,
-		"role": "master",
-		"tier": "backend",
+		"app":  cr.Name + "-redis",
 	}
-	return &corev1.Pod{
+	return &dysprozv1alpha1.Redis{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-redis-master",
+			Name: cr.Name + "-redis",
 			Namespace: cr.Namespace,
-			Labels:    labels,
+			Labels: labels,
 		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  cr.Name + "-redis-master",
-					Image: cr.Spec.RedisMasterImage,
-					Ports: []corev1.ContainerPort{
-						{
-							ContainerPort: 6379,
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func newRedisSlavesForCR(cr *dysprozv1alpha1.Guestbook) *appsv1.Deployment {
-	slavesReplicas := int32(cr.Spec.RedisSize - 1)
-	labels := map[string]string{
-		"app":  cr.Name,
-		"role": "slave",
-		"tier": "backend",
-	}
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-redis-slave",
-			Namespace: cr.Namespace,
-			Labels:    labels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &slavesReplicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  cr.Name + "-redis-slave",
-							Image: cr.Spec.RedisSlaveImage,
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: 6379,
-								},
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name:  "GET_HOSTS_FROM",
-									Value: "env",
-								},
-								{
-									Name:  "REDIS_MASTER_SERVICE_HOST",
-									Value: cr.Name + "-redis-master-service",
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func newRedisMasterService(cr *dysprozv1alpha1.Guestbook) *corev1.Service {
-	labels := map[string]string{
-		"app":  cr.Name,
-		"role": "master",
-		"tier": "backend",
-	}
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-redis-master-service",
-			Namespace: cr.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{
-				corev1.ServicePort{
-					Port:       6379,
-					TargetPort: intstr.IntOrString{IntVal: 6379},
-				},
-			},
-			Selector: labels,
-		},
-	}
-}
-
-func newRedisSlavesService(cr *dysprozv1alpha1.Guestbook) *corev1.Service {
-	labels := map[string]string{
-		"app":  cr.Name,
-		"role": "slave",
-		"tier": "backend",
-	}
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-redis-slave-service",
-			Namespace: cr.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{
-				corev1.ServicePort{
-					Port: 6379,
-				},
-			},
-			Selector: labels,
+		Spec: dysprozv1alpha1.RedisSpec{
+			Size: cr.Spec.RedisSize,
+			MasterImage: cr.Spec.RedisMasterImage,
+			SlaveImage: cr.Spec.RedisSlaveImage,
 		},
 	}
 }
