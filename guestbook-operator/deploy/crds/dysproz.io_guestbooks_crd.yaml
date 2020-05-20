@@ -3,6 +3,11 @@ kind: CustomResourceDefinition
 metadata:
   name: guestbooks.dysproz.io
 spec:
+  additionalPrinterColumns:
+  - JSONPath: .status.ready
+    description: Is Guestbook ready?
+    name: Ready
+    type: boolean
   group: dysproz.io
   names:
     kind: Guestbook
@@ -44,6 +49,9 @@ spec:
           type: object
         status:
           description: GuestbookStatus defines the observed state of Guestbook
+          properties:
+            ready:
+              type: boolean
           type: object
       type: object
   version: v1alpha1

@@ -141,6 +141,10 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
+	if !redis.Status.Ready {
+		return reconcile.Result{}, nil
+	}
+
 	// Create Deployment with Frontend pods
 
 	frontendPods := newFrontend(instance)
@@ -188,6 +192,14 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 
 	} else if err != nil {
 		return reconcile.Result{}, err
+	}
+
+	if redis.Status.Ready && foundFrontend.Status.ReadyReplicas == int32(instance.Spec.GuestbookSize) {
+		reqLogger.Info("Guestbook is ready")
+		instance.Status.Ready = true
+	} else {
+		reqLogger.Info("Wainitng for Guestbook to become ready")
+		instance.Status.Ready = false
 	}
 
 	return reconcile.Result{}, nil

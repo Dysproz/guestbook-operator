@@ -16,6 +16,7 @@ type RedisSpec struct {
 
 // RedisStatus defines the observed state of Redis
 type RedisStatus struct {
+	Ready bool `json:"ready,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -23,6 +24,7 @@ type RedisStatus struct {
 // Redis is the Schema for the redis API
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=redis,scope=Namespaced
+// +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready",description="Is Readis ready?"
 type Redis struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

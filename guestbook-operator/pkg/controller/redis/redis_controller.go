@@ -164,6 +164,10 @@ func (r *ReconcileRedis) Reconcile(request reconcile.Request) (reconcile.Result,
 		return reconcile.Result{}, err
 	}
 
+	if foundMaster.Status.Phase != corev1.PodRunning {
+		return reconcile.Result{}, err
+	}
+
 	//Create Deployment with Redis Slaves
 
 	redisSlaves := newRedisSlavesForCR(instance)
@@ -214,6 +218,15 @@ func (r *ReconcileRedis) Reconcile(request reconcile.Request) (reconcile.Result,
 
 	} else if err != nil {
 		return reconcile.Result{}, err
+	}
+
+	// Set Redis Active status
+	if foundMaster.Status.Phase == corev1.PodRunning && foundSlaves.Status.ReadyReplicas == int32(instance.Spec.Size-1) {
+		reqLogger.Info("Redis is ready")
+		instance.Status.Ready = true
+	} else {
+		reqLogger.Info("Waiting for Redis to be ready")
+		instance.Status.Ready = false
 	}
 
 	return reconcile.Result{}, nil

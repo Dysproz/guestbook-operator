@@ -3,6 +3,11 @@ kind: CustomResourceDefinition
 metadata:
   name: redis.dysproz.io
 spec:
+  additionalPrinterColumns:
+  - JSONPath: .status.ready
+    description: Is Readis ready?
+    name: Ready
+    type: boolean
   group: dysproz.io
   names:
     kind: Redis
@@ -30,9 +35,19 @@ spec:
           type: object
         spec:
           description: RedisSpec defines the desired state of Redis
+          properties:
+            masterImage:
+              type: string
+            size:
+              type: integer
+            slaveImage:
+              type: string
           type: object
         status:
           description: RedisStatus defines the observed state of Redis
+          properties:
+            ready:
+              type: boolean
           type: object
       type: object
   version: v1alpha1
