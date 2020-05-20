@@ -229,6 +229,8 @@ func (r *ReconcileRedis) Reconcile(request reconcile.Request) (reconcile.Result,
 		instance.Status.Ready = false
 	}
 
+	err = r.client.Update(context.TODO(), instance)
+
 	return reconcile.Result{}, nil
 }
 
