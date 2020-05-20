@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -110,9 +111,11 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 	reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 	reqLogger.Info("Reconciling Guestbook")
 
+	ctx := context.TODO()
+
 	// Fetch the Guestbook instance
 	instance := &dysprozv1alpha1.Guestbook{}
-	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
+	err := r.client.Get(ctx, request.NamespacedName, instance)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
@@ -126,32 +129,16 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 
 	// Create Redis
 
-	redis := newRedis(instance)
+	var redis dysprozv1alpha1.Redis
+	redis.Name = instance.Name + "-redis"
+	redis.Namespace = instance.Namespace
 
-	// Set Redis instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, redis, r.scheme); err != nil {
+	_, err = ctrl.CreateOrUpdate(ctx, r.client, &redis, func() error {
+		modifyRedis(instance, &redis)
+		return controllerutil.SetControllerReference(instance, &redis, r.scheme)
+	})
+	if err != nil {
 		return reconcile.Result{}, err
-	}
-
-	// Check if Redis already exists
-	foundRedis := &dysprozv1alpha1.Redis{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redis.Name, Namespace: redis.Namespace}, foundRedis)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Redis", "Pod.Namespace", redis.Namespace, "Pod.Name", redis.Name)
-		err = r.client.Create(context.TODO(), redis)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-	} else if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	if foundRedis.Spec.Size != instance.Spec.RedisSize {
-		err = r.client.Update(context.TODO(), redis)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
 	}
 
 	// Create Deployment with Frontend pods
@@ -165,10 +152,10 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 
 	// Check if this Deployment already exists
 	foundFrontend := &appsv1.Deployment{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: frontendPods.Name, Namespace: frontendPods.Namespace}, foundFrontend)
+	err = r.client.Get(ctx, types.NamespacedName{Name: frontendPods.Name, Namespace: frontendPods.Namespace}, foundFrontend)
 	if err != nil && errors.IsNotFound(err) {
 		reqLogger.Info("Creating a new Deployment frontendPods", "Pod.Namespace", frontendPods.Namespace, "Pod.Name", frontendPods.Name)
-		err = r.client.Create(context.TODO(), frontendPods)
+		err = r.client.Create(ctx, frontendPods)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
@@ -178,7 +165,7 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 	}
 	frontendSize := int32(instance.Spec.GuestbookSize)
 	if foundFrontend.Spec.Replicas != &frontendSize {
-		err = r.client.Update(context.TODO(), frontendPods)
+		err = r.client.Update(ctx, frontendPods)
 	}
 
 	// Create Service for Frontend
@@ -191,10 +178,10 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 
 	// Check if this Service already exists
 	foundFrontendService := &corev1.Service{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: frontendService.Name, Namespace: frontendService.Namespace}, foundFrontendService)
+	err = r.client.Get(ctx, types.NamespacedName{Name: frontendService.Name, Namespace: frontendService.Namespace}, foundFrontendService)
 	if err != nil && errors.IsNotFound(err) {
 		reqLogger.Info("Creating a new Service frontendService", "Pod.Namespace", frontendService.Namespace, "Pod.Name", frontendService.Name)
-		err = r.client.Create(context.TODO(), frontendService)
+		err = r.client.Create(ctx, frontendService)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
@@ -206,22 +193,16 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 	return reconcile.Result{}, nil
 }
 
-func newRedis(cr *dysprozv1alpha1.Guestbook) *dysprozv1alpha1.Redis {
+func modifyRedis(cr *dysprozv1alpha1.Guestbook, redis *dysprozv1alpha1.Redis) {
 	labels := map[string]string{
-		"app":  cr.Name + "-redis",
+		"app": cr.Name + "-redis",
 	}
-	return &dysprozv1alpha1.Redis{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: cr.Name + "-redis",
-			Namespace: cr.Namespace,
-			Labels: labels,
-		},
-		Spec: dysprozv1alpha1.RedisSpec{
-			Size: cr.Spec.RedisSize,
-			MasterImage: cr.Spec.RedisMasterImage,
-			SlaveImage: cr.Spec.RedisSlaveImage,
-		},
+	if redis.Labels == nil {
+		redis.Labels = labels
 	}
+	redis.Spec.Size = cr.Spec.RedisSize
+	redis.Spec.MasterImage = cr.Spec.RedisMasterImage
+	redis.Spec.SlaveImage = cr.Spec.RedisSlaveImage
 }
 
 func newFrontend(cr *dysprozv1alpha1.Guestbook) *appsv1.Deployment {
