@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -106,6 +106,8 @@ func (r *ReconcileRedis) Reconcile(request reconcile.Request) (reconcile.Result,
 	reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 	reqLogger.Info("Reconciling Redis")
 
+	ctx := context.TODO()
+
 	// Fetch the Redis instance
 	instance := &dysprozv1alpha1.Redis{}
 	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
@@ -121,107 +123,60 @@ func (r *ReconcileRedis) Reconcile(request reconcile.Request) (reconcile.Result,
 	}
 
 	// Define a new Pod object with Redis Master
-	redisMaster := newRedisMasterForCR(instance)
-
-	// Set Redis instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, redisMaster, r.scheme); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	// Check if this Pod already exists
-	foundMaster := &corev1.Pod{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redisMaster.Name, Namespace: redisMaster.Namespace}, foundMaster)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Pod RedisMaster", "Pod.Namespace", redisMaster.Namespace, "Pod.Name", redisMaster.Name)
-		err = r.client.Create(context.TODO(), redisMaster)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-	} else if err != nil {
+	var masterPod corev1.Pod
+	masterPod.Name = instance.Name + "-redis-master"
+	masterPod.Namespace = instance.Namespace
+	_, err = ctrl.CreateOrUpdate(ctx, r.client, &masterPod, func() error {
+		modifyRedisMasterForCR(instance, &masterPod)
+		return controllerutil.SetControllerReference(instance, &masterPod, r.scheme)
+	})
+	if err != nil {
 		return reconcile.Result{}, err
 	}
 
 	// Create Service for Redis Master
-	redisMasterService := newRedisMasterService(instance)
-
-	// Set Redis instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, redisMasterService, r.scheme); err != nil {
+	var masterSvc corev1.Service
+	masterSvc.Name = instance.Name + "-redis-master-service"
+	masterSvc.Namespace = instance.Namespace
+	_, err = ctrl.CreateOrUpdate(ctx, r.client, &masterSvc, func() error {
+		modifyRedisMasterService(instance, &masterSvc)
+		return controllerutil.SetControllerReference(instance, &masterSvc, r.scheme)
+	})
+	if err != nil {
 		return reconcile.Result{}, err
 	}
 
-	// Check if this Service already exists
-	foundMasterService := &corev1.Service{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redisMasterService.Name, Namespace: redisMasterService.Namespace}, foundMasterService)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Service redisMasterService", "Pod.Namespace", redisMasterService.Namespace, "Pod.Name", redisMasterService.Name)
-		err = r.client.Create(context.TODO(), redisMasterService)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-	} else if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	if foundMaster.Status.Phase != corev1.PodRunning {
+	if masterPod.Status.Phase != "Running" {
+		reqLogger.Info("Waiting for master to initialize", "Pod Phase", masterPod.Status.Phase)
 		return reconcile.Result{}, err
 	}
 
 	//Create Deployment with Redis Slaves
-
-	redisSlaves := newRedisSlavesForCR(instance)
-
-	// Set Redis instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, redisSlaves, r.scheme); err != nil {
+	var slaves appsv1.Deployment
+	slaves.Name = instance.Name + "-redis-slave"
+	slaves.Namespace = instance.Namespace
+	_, err = ctrl.CreateOrUpdate(ctx, r.client, &slaves, func() error {
+		modifyRedisSlavesForCR(instance, &slaves)
+		return controllerutil.SetControllerReference(instance, &slaves, r.scheme)
+	})
+	if err != nil {
 		return reconcile.Result{}, err
-	}
-
-	// Check if this Deployment already exists
-	foundSlaves := &appsv1.Deployment{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redisSlaves.Name, Namespace: redisSlaves.Namespace}, foundSlaves)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Deployment RedisSlaves", "Pod.Namespace", redisSlaves.Namespace, "Pod.Name", redisSlaves.Name, "Slaves count", int32(instance.Spec.Size-1))
-		err = r.client.Create(context.TODO(), redisSlaves)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-	} else if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	redisSlavesSize := int32(instance.Spec.Size - 1)
-	if foundSlaves.Spec.Replicas != &redisSlavesSize {
-		err = r.client.Update(context.TODO(), redisSlaves)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
 	}
 
 	// Create Service for Redis Slaves
-	redisSlavesService := newRedisSlavesService(instance)
-
-	// Set Redis instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, redisSlavesService, r.scheme); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	// Check if this Service already exists
-	foundSlavesService := &corev1.Service{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: redisSlavesService.Name, Namespace: redisSlavesService.Namespace}, foundSlavesService)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Service redisSlavesService", "Pod.Namespace", redisSlavesService.Namespace, "Pod.Name", redisSlavesService.Name)
-		err = r.client.Create(context.TODO(), redisSlavesService)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-	} else if err != nil {
+	var slavesSvc corev1.Service
+	slavesSvc.Name = instance.Name + "-redis-slave-service"
+	slavesSvc.Namespace = instance.Namespace
+	_, err = ctrl.CreateOrUpdate(ctx, r.client, &slavesSvc, func() error {
+		modifyRedisSlavesService(instance, &slavesSvc)
+		return controllerutil.SetControllerReference(instance, &slavesSvc, r.scheme)
+	})
+	if err != nil {
 		return reconcile.Result{}, err
 	}
 
 	// Set Redis Active status
-	if foundMaster.Status.Phase == corev1.PodRunning && foundSlaves.Status.ReadyReplicas == int32(instance.Spec.Size-1) {
+	if masterPod.Status.Phase == corev1.PodRunning && slaves.Status.ReadyReplicas == int32(instance.Spec.Size-1) {
 		reqLogger.Info("Redis is ready")
 		instance.Status.Ready = true
 	} else {
@@ -235,19 +190,17 @@ func (r *ReconcileRedis) Reconcile(request reconcile.Request) (reconcile.Result,
 }
 
 // newRedisMasterForCR returns a redis master pod with the same name/namespace as the cr
-func newRedisMasterForCR(cr *dysprozv1alpha1.Redis) *corev1.Pod {
+func modifyRedisMasterForCR(cr *dysprozv1alpha1.Redis, master *corev1.Pod) {
 	labels := map[string]string{
 		"app":  cr.Name,
 		"role": "master",
 		"tier": "backend",
 	}
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-redis-master",
-			Namespace: cr.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.PodSpec{
+	if master.ObjectMeta.Labels == nil {
+		master.ObjectMeta.Labels = labels
+	}
+	if len(master.Spec.Containers) < 1 {
+		master.Spec = corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
 					Name:  cr.Name + "-redis-master",
@@ -259,52 +212,46 @@ func newRedisMasterForCR(cr *dysprozv1alpha1.Redis) *corev1.Pod {
 					},
 				},
 			},
-		},
+		}
 	}
 }
 
-func newRedisSlavesForCR(cr *dysprozv1alpha1.Redis) *appsv1.Deployment {
+func modifyRedisSlavesForCR(cr *dysprozv1alpha1.Redis, slaves *appsv1.Deployment) {
 	slavesReplicas := int32(cr.Spec.Size - 1)
 	labels := map[string]string{
 		"app":  cr.Name,
 		"role": "slave",
 		"tier": "backend",
 	}
-	return &appsv1.Deployment{
+	if slaves.ObjectMeta.Labels == nil {
+		slaves.ObjectMeta.Labels = labels
+	}
+	slaves.Spec.Replicas = &slavesReplicas
+	if slaves.Spec.Selector.MatchLabels == nil {
+		slaves.Spec.Selector.MatchLabels = labels
+	}
+	slaves.Spec.Template = corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-redis-slave",
-			Namespace: cr.Namespace,
-			Labels:    labels,
+			Labels: labels,
 		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &slavesReplicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  cr.Name + "-redis-slave",
+					Image: cr.Spec.SlaveImage,
+					Ports: []corev1.ContainerPort{
 						{
-							Name:  cr.Name + "-redis-slave",
-							Image: cr.Spec.SlaveImage,
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: 6379,
-								},
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name:  "GET_HOSTS_FROM",
-									Value: "env",
-								},
-								{
-									Name:  "REDIS_MASTER_SERVICE_HOST",
-									Value: cr.Name + "-redis-master-service",
-								},
-							},
+							ContainerPort: 6379,
+						},
+					},
+					Env: []corev1.EnvVar{
+						{
+							Name:  "GET_HOSTS_FROM",
+							Value: "env",
+						},
+						{
+							Name:  "REDIS_MASTER_SERVICE_HOST",
+							Value: cr.Name + "-redis-master-service",
 						},
 					},
 				},
@@ -313,49 +260,37 @@ func newRedisSlavesForCR(cr *dysprozv1alpha1.Redis) *appsv1.Deployment {
 	}
 }
 
-func newRedisMasterService(cr *dysprozv1alpha1.Redis) *corev1.Service {
+func modifyRedisMasterService(cr *dysprozv1alpha1.Redis, masterSvc *corev1.Service) {
 	labels := map[string]string{
 		"app":  cr.Name,
 		"role": "master",
 		"tier": "backend",
 	}
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-redis-master-service",
-			Namespace: cr.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{
-				corev1.ServicePort{
-					Port:       6379,
-					TargetPort: intstr.IntOrString{IntVal: 6379},
-				},
-			},
-			Selector: labels,
-		},
+	if masterSvc.ObjectMeta.Labels == nil {
+		masterSvc.ObjectMeta.Labels = labels
 	}
+	masterSvc.Spec.Ports =  []corev1.ServicePort{
+			corev1.ServicePort{
+				Port:       6379,
+				TargetPort: intstr.IntOrString{IntVal: 6379},
+			},
+	}
+	masterSvc.Spec.Selector = labels
 }
 
-func newRedisSlavesService(cr *dysprozv1alpha1.Redis) *corev1.Service {
+func modifyRedisSlavesService(cr *dysprozv1alpha1.Redis, slaveSvc *corev1.Service) {
 	labels := map[string]string{
 		"app":  cr.Name,
 		"role": "slave",
 		"tier": "backend",
 	}
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-redis-slave-service",
-			Namespace: cr.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{
-				corev1.ServicePort{
-					Port: 6379,
-				},
-			},
-			Selector: labels,
-		},
+	if slaveSvc.ObjectMeta.Labels == nil {
+		slaveSvc.ObjectMeta.Labels = labels
 	}
+	slaveSvc.Spec.Ports = []corev1.ServicePort{
+			corev1.ServicePort{
+				Port: 6379,
+			},
+	}
+	slaveSvc.Spec.Selector = labels
 }

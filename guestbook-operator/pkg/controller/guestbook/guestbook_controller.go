@@ -7,9 +7,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -146,55 +144,30 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 	}
 
 	// Create Deployment with Frontend pods
-
-	frontendPods := newFrontend(instance)
-
-	// Set Guestbook instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, frontendPods, r.scheme); err != nil {
+	var frontend appsv1.Deployment
+	frontend.Name = instance.Name + "-frontend"
+	frontend.Namespace = instance.Namespace
+	_, err = ctrl.CreateOrUpdate(ctx, r.client, &frontend, func() error {
+		modifyFrontend(instance, &frontend)
+		return controllerutil.SetControllerReference(instance, &frontend, r.scheme)
+	})
+	if err != nil {
 		return reconcile.Result{}, err
-	}
-
-	// Check if this Deployment already exists
-	foundFrontend := &appsv1.Deployment{}
-	err = r.client.Get(ctx, types.NamespacedName{Name: frontendPods.Name, Namespace: frontendPods.Namespace}, foundFrontend)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Deployment frontendPods", "Pod.Namespace", frontendPods.Namespace, "Pod.Name", frontendPods.Name)
-		err = r.client.Create(ctx, frontendPods)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-	} else if err != nil {
-		return reconcile.Result{}, err
-	}
-	frontendSize := int32(instance.Spec.GuestbookSize)
-	if foundFrontend.Spec.Replicas != &frontendSize {
-		err = r.client.Update(ctx, frontendPods)
 	}
 
 	// Create Service for Frontend
-	frontendService := newFrontendService(instance)
-
-	// Set Guestbook instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, frontendService, r.scheme); err != nil {
+	var frontSvc corev1.Service
+	frontSvc.Name = instance.Name + "-frontend-service"
+	frontSvc.Namespace = instance.Namespace
+	_, err = ctrl.CreateOrUpdate(ctx, r.client, &frontSvc, func() error {
+		modifyFrontendService(instance, &frontSvc)
+		return controllerutil.SetControllerReference(instance, &frontSvc, r.scheme)
+	})
+	if err != nil {
 		return reconcile.Result{}, err
 	}
 
-	// Check if this Service already exists
-	foundFrontendService := &corev1.Service{}
-	err = r.client.Get(ctx, types.NamespacedName{Name: frontendService.Name, Namespace: frontendService.Namespace}, foundFrontendService)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Service frontendService", "Pod.Namespace", frontendService.Namespace, "Pod.Name", frontendService.Name)
-		err = r.client.Create(ctx, frontendService)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-	} else if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	if redis.Status.Ready && foundFrontend.Status.ReadyReplicas == int32(instance.Spec.GuestbookSize) {
+	if redis.Status.Ready && frontend.Status.ReadyReplicas == int32(instance.Spec.GuestbookSize) {
 		reqLogger.Info("Guestbook is ready")
 		instance.Status.Ready = true
 	} else {
@@ -217,76 +190,60 @@ func modifyRedis(cr *dysprozv1alpha1.Guestbook, redis *dysprozv1alpha1.Redis) {
 	redis.Spec.SlaveImage = cr.Spec.RedisSlaveImage
 }
 
-func newFrontend(cr *dysprozv1alpha1.Guestbook) *appsv1.Deployment {
+func modifyFrontend(cr *dysprozv1alpha1.Guestbook, front *appsv1.Deployment) {
 	frontendSize := int32(cr.Spec.GuestbookSize)
 	labels := map[string]string{
 		"app":  cr.Name,
 		"tier": "frontend",
 	}
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-frontend",
-			Namespace: cr.Namespace,
-			Labels: map[string]string{
-				"app": cr.Name,
-			},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
-			},
-			Replicas: &frontendSize,
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+	if front.Spec.Template.ObjectMeta.Labels == nil {
+		front.Spec.Template.ObjectMeta.Labels = labels
+	}
+	if front.ObjectMeta.Labels == nil {
+		front.ObjectMeta.Labels = map[string]string{
+			"app": cr.Name,
+		}
+	}
+	front.Spec.Replicas = &frontendSize
+	front.Spec.Selector.MatchLabels = labels
+	front.Spec.Template.Spec.Containers = []corev1.Container{
+		{
+			Name:  cr.Name + "-php-frontend",
+			Image: cr.Spec.GuestbookImage,
+			Env: []corev1.EnvVar{
+				{
+					Name:  "GET_HOSTS_FROM",
+					Value: "env",
 				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  cr.Name + "-php-frontend",
-							Image: cr.Spec.GuestbookImage,
-							Env: []corev1.EnvVar{
-								{
-									Name:  "GET_HOSTS_FROM",
-									Value: "env",
-								},
-								{
-									Name:  "REDIS_SLAVE_SERVICE_HOST",
-									Value: cr.Name + "-redis-slave-service",
-								},
-							},
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: 6379,
-								},
-							},
-						},
-					},
+				{
+					Name:  "REDIS_SLAVE_SERVICE_HOST",
+					Value: cr.Name + "-redis-slave-service",
+				},
+			},
+			Ports: []corev1.ContainerPort{
+				{
+					ContainerPort: 6379,
 				},
 			},
 		},
 	}
 }
 
-func newFrontendService(cr *dysprozv1alpha1.Guestbook) *corev1.Service {
+func modifyFrontendService(cr *dysprozv1alpha1.Guestbook, frontService *corev1.Service) {
 	labels := map[string]string{
 		"app":  cr.Name,
 		"tier": "frontend",
 	}
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-frontend-service",
-			Namespace: cr.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeNodePort,
-			Ports: []corev1.ServicePort{
-				{
-					Port: 80,
-				},
+	if frontService.ObjectMeta.Labels == nil {
+		frontService.ObjectMeta.Labels = labels
+	}
+	frontService.Spec = corev1.ServiceSpec{
+		Type: corev1.ServiceTypeNodePort,
+		Ports: []corev1.ServicePort{
+			{
+				Port: 80,
 			},
-			Selector: labels,
 		},
+		Selector: labels,
 	}
 }
