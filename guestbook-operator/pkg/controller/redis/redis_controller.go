@@ -7,6 +7,7 @@ import (
 	dysprozv1alpha1 "github.com/Dysproz/guestbook-operator/pkg/apis/dysproz/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -154,11 +155,7 @@ func (r *ReconcileRedis) Reconcile(request reconcile.Request) (reconcile.Result,
 	var slaves appsv1.Deployment
 	slaves.Name = instance.Name + "-redis-slave"
 	slaves.Namespace = instance.Namespace
-	slaves.Spec.Selector.MatchLabels = map[string]string{
-		"app":  instance.Name,
-		"role": "slave",
-		"tier": "backend",
-	}
+
 	_, err = ctrl.CreateOrUpdate(ctx, r.client, &slaves, func() error {
 		modifyRedisSlavesForCR(instance, &slaves)
 		return controllerutil.SetControllerReference(instance, &slaves, r.scheme)
@@ -227,14 +224,16 @@ func modifyRedisSlavesForCR(cr *dysprozv1alpha1.Redis, slaves *appsv1.Deployment
 		"role": "slave",
 		"tier": "backend",
 	}
-	if slaves.ObjectMeta.Labels == nil {
-		slaves.ObjectMeta.Labels = labels
-	}
+	slaves.ObjectMeta.Labels = labels
 	slaves.Spec.Replicas = &slavesReplicas
+	slaves.Spec.Template.ObjectMeta.Labels = labels
 	templateSpec := &slaves.Spec.Template.Spec
 
 	if len(templateSpec.Containers) == 0 {
 		templateSpec.Containers = make([]corev1.Container, 1)
+	}
+	slaves.Spec.Selector = &metav1.LabelSelector{
+		MatchLabels: labels,
 	}
 	container := &templateSpec.Containers[0]
 	container.Name = cr.Name + "-redis-slave"

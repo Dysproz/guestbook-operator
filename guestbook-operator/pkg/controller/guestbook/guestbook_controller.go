@@ -2,6 +2,7 @@ package guestbook
 
 import (
 	"context"
+	goerrors "errors"
 
 	dysprozv1alpha1 "github.com/Dysproz/guestbook-operator/pkg/apis/dysproz/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -10,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -52,7 +54,10 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	}
 
 	// Watch for changes to primary resource Redis
-	err = c.Watch(&source.Kind{Type: &dysprozv1alpha1.Redis{}}, &handler.EnqueueRequestForObject{})
+	err = c.Watch(&source.Kind{Type: &dysprozv1alpha1.Redis{}}, &handler.EnqueueRequestForOwner{
+		IsController: true,
+		OwnerType:    &dysprozv1alpha1.Guestbook{},
+	})
 	if err != nil {
 		return err
 	}
@@ -139,10 +144,11 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
+	// _ = r.client.Get(ctx, types.NamespacedName{Name: redis.Name, Namespace: redis.Namespace}, redis)
+	reqLogger.Info("Redis status", "Status", redis.Status.Ready)
 	if !redis.Status.Ready {
-		return reconcile.Result{}, nil
+		return reconcile.Result{}, goerrors.New("Redis not ready")
 	}
-
 	// Create Deployment with Frontend pods
 	var frontend appsv1.Deployment
 	frontend.Name = instance.Name + "-frontend"
@@ -205,6 +211,7 @@ func modifyFrontend(cr *dysprozv1alpha1.Guestbook, front *appsv1.Deployment) {
 		}
 	}
 	front.Spec.Replicas = &frontendSize
+	front.Spec.Template.ObjectMeta.Labels = labels
 	front.Spec.Selector.MatchLabels = labels
 	front.Spec.Template.Spec.Containers = []corev1.Container{
 		{
