@@ -2,16 +2,16 @@ package guestbook
 
 import (
 	"context"
-	goerrors "errors"
 
 	dysprozv1alpha1 "github.com/Dysproz/guestbook-operator/pkg/apis/dysproz/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -53,7 +53,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	// Watch for changes to primary resource Redis
+	// Watch for changes to secondary resource Redis
 	err = c.Watch(&source.Kind{Type: &dysprozv1alpha1.Redis{}}, &handler.EnqueueRequestForOwner{
 		IsController: true,
 		OwnerType:    &dysprozv1alpha1.Guestbook{},
@@ -144,11 +144,12 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
-	// _ = r.client.Get(ctx, types.NamespacedName{Name: redis.Name, Namespace: redis.Namespace}, redis)
-	reqLogger.Info("Redis status", "Status", redis.Status.Ready)
-	if !redis.Status.Ready {
-		return reconcile.Result{}, goerrors.New("Redis not ready")
+	updatedRedis := &dysprozv1alpha1.Redis{}
+	_ = r.client.Get(ctx, types.NamespacedName{Name: redis.Name, Namespace: redis.Namespace}, updatedRedis)
+	if !updatedRedis.Status.Ready {
+		return reconcile.Result{Requeue: true}, nil
 	}
+
 	// Create Deployment with Frontend pods
 	var frontend appsv1.Deployment
 	frontend.Name = instance.Name + "-frontend"
@@ -181,6 +182,10 @@ func (r *ReconcileGuestbook) Reconcile(request reconcile.Request) (reconcile.Res
 		instance.Status.Ready = false
 	}
 
+	if err := r.client.Status().Update(ctx, instance); err != nil {
+		return reconcile.Result{}, err
+	}
+
 	return reconcile.Result{}, nil
 }
 
@@ -202,6 +207,9 @@ func modifyFrontend(cr *dysprozv1alpha1.Guestbook, front *appsv1.Deployment) {
 		"app":  cr.Name,
 		"tier": "frontend",
 	}
+	if front.ObjectMeta.Labels == nil {
+		front.ObjectMeta.Labels = labels
+	}
 	if front.Spec.Template.ObjectMeta.Labels == nil {
 		front.Spec.Template.ObjectMeta.Labels = labels
 	}
@@ -212,7 +220,9 @@ func modifyFrontend(cr *dysprozv1alpha1.Guestbook, front *appsv1.Deployment) {
 	}
 	front.Spec.Replicas = &frontendSize
 	front.Spec.Template.ObjectMeta.Labels = labels
-	front.Spec.Selector.MatchLabels = labels
+	front.Spec.Selector = &metav1.LabelSelector{
+		MatchLabels: labels,
+	}
 	front.Spec.Template.Spec.Containers = []corev1.Container{
 		{
 			Name:  cr.Name + "-php-frontend",
@@ -244,13 +254,11 @@ func modifyFrontendService(cr *dysprozv1alpha1.Guestbook, frontService *corev1.S
 	if frontService.ObjectMeta.Labels == nil {
 		frontService.ObjectMeta.Labels = labels
 	}
-	frontService.Spec = corev1.ServiceSpec{
-		Type: corev1.ServiceTypeNodePort,
-		Ports: []corev1.ServicePort{
-			{
-				Port: 80,
-			},
+	frontService.Spec.Type = corev1.ServiceTypeNodePort
+	frontService.Spec.Ports = []corev1.ServicePort{
+		{
+			Port: 80,
 		},
-		Selector: labels,
 	}
+	frontService.Spec.Selector = labels
 }

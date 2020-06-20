@@ -7,8 +7,8 @@ import (
 	dysprozv1alpha1 "github.com/Dysproz/guestbook-operator/pkg/apis/dysproz/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -110,7 +110,7 @@ func (r *ReconcileRedis) Reconcile(request reconcile.Request) (reconcile.Result,
 
 	// Fetch the Redis instance
 	instance := &dysprozv1alpha1.Redis{}
-	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
+	err := r.client.Get(ctx, request.NamespacedName, instance)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
@@ -185,7 +185,9 @@ func (r *ReconcileRedis) Reconcile(request reconcile.Request) (reconcile.Result,
 		instance.Status.Ready = false
 	}
 
-	err = r.client.Update(context.TODO(), instance)
+	if err := r.client.Status().Update(ctx, instance); err != nil {
+		return reconcile.Result{}, err
+	}
 
 	return reconcile.Result{}, nil
 }
@@ -224,9 +226,13 @@ func modifyRedisSlavesForCR(cr *dysprozv1alpha1.Redis, slaves *appsv1.Deployment
 		"role": "slave",
 		"tier": "backend",
 	}
-	slaves.ObjectMeta.Labels = labels
+	if slaves.ObjectMeta.Labels == nil {
+		slaves.ObjectMeta.Labels = labels
+	}
 	slaves.Spec.Replicas = &slavesReplicas
-	slaves.Spec.Template.ObjectMeta.Labels = labels
+	if slaves.Spec.Template.ObjectMeta.Labels == nil {
+		slaves.Spec.Template.ObjectMeta.Labels = labels
+	}
 	templateSpec := &slaves.Spec.Template.Spec
 
 	if len(templateSpec.Containers) == 0 {
@@ -264,11 +270,11 @@ func modifyRedisMasterService(cr *dysprozv1alpha1.Redis, masterSvc *corev1.Servi
 	if masterSvc.ObjectMeta.Labels == nil {
 		masterSvc.ObjectMeta.Labels = labels
 	}
-	masterSvc.Spec.Ports =  []corev1.ServicePort{
-			corev1.ServicePort{
-				Port:       6379,
-				TargetPort: intstr.IntOrString{IntVal: 6379},
-			},
+	masterSvc.Spec.Ports = []corev1.ServicePort{
+		corev1.ServicePort{
+			Port:       6379,
+			TargetPort: intstr.IntOrString{IntVal: 6379},
+		},
 	}
 	masterSvc.Spec.Selector = labels
 }
@@ -283,9 +289,9 @@ func modifyRedisSlavesService(cr *dysprozv1alpha1.Redis, slaveSvc *corev1.Servic
 		slaveSvc.ObjectMeta.Labels = labels
 	}
 	slaveSvc.Spec.Ports = []corev1.ServicePort{
-			corev1.ServicePort{
-				Port: 6379,
-			},
+		corev1.ServicePort{
+			Port: 6379,
+		},
 	}
 	slaveSvc.Spec.Selector = labels
 }
