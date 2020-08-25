@@ -18,6 +18,7 @@ type GuestbookSpec struct {
 
 // GuestbookStatus defines the observed state of Guestbook
 type GuestbookStatus struct {
+	Ready bool `json:"ready,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -25,6 +26,7 @@ type GuestbookStatus struct {
 // Guestbook is the Schema for the guestbooks API
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=guestbooks,scope=Namespaced
+// +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready",description="Is Guestbook ready?"
 type Guestbook struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

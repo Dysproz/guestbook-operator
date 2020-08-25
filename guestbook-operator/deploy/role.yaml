@@ -70,6 +70,7 @@ rules:
   - dysproz.io
   resources:
   - '*'
+  - redis
   verbs:
   - create
   - delete

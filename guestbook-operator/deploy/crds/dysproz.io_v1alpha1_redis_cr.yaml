@@ -1,0 +1,8 @@
+apiVersion: dysproz.io/v1alpha1
+kind: Redis
+metadata:
+  name: example-redis
+spec:
+  size: 3
+  masterImage: "redis"
+  slaveImage: "gcr.io/google_samples/gb-redisslave:v3"
